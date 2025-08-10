@@ -42,10 +42,30 @@ export class AutomationService {
   }
 
   private async loginToParamount(page: Page, args: LoginArgs): Promise<void> {
-    this.logger.debug('Navigating to Paramount+ account page');
-    await page.goto('https://www.paramountplus.com/account/', {
+    // Start from homepage then navigate to sign-in for better reliability
+    this.logger.debug('Opening Paramount+ homepage');
+    await page.goto('https://www.paramountplus.com/', {
       waitUntil: 'domcontentloaded',
     });
+    await this.acceptCookieBanner(page).catch(() => undefined);
+
+    // Try to click SIGN IN entrypoint; if not found, fall back to account page
+    const clickedSignIn = await this.clickByText(page, 'a,button', [
+      'sign in',
+      'log in',
+    ]).catch(() => false);
+    if (!clickedSignIn) {
+      this.logger.debug(
+        'SIGN IN button not found on homepage, going to /account',
+      );
+      await page.goto('https://www.paramountplus.com/account/', {
+        waitUntil: 'domcontentloaded',
+      });
+    } else {
+      await page
+        .waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 })
+        .catch(() => undefined);
+    }
 
     // Try to accept common cookie banners (OneTrust) if present
     await this.acceptCookieBanner(page).catch(() => undefined);
@@ -56,12 +76,16 @@ export class AutomationService {
       },
       { retries: 5 },
     );
-    await retryAsync(
-      async () => {
-        await page.waitForSelector('input[name="password"]', { timeout: 5000 });
-      },
-      { retries: 5 },
-    );
+    // Password may appear after continuing from email; try wait, otherwise try Continue/Next then wait again
+    let passwordVisible = false;
+    try {
+      await page.waitForSelector('input[name="password"]', { timeout: 5000 });
+      passwordVisible = true;
+    } catch (_) {
+      this.logger.debug(
+        'Password not visible yet; attempting to continue after email',
+      );
+    }
 
     // Some pages lazy render or nest fields inside iframes; find robustly
     const emailCtx = await this.findFieldContext(page, [
@@ -69,25 +93,77 @@ export class AutomationService {
       'input#email',
       'input[type="email"]',
     ]);
-    const passwordCtx = await this.findFieldContext(page, [
-      'input[name="password"]',
-      'input#password',
-      'input[type="password"]',
-    ]);
+    let passwordCtx: { context: Page | Frame; selector: string } | null = null;
+    if (!passwordVisible) {
+      // Try a two-step flow: click Continue/Next after typing email to reveal password
+      await emailCtx.context.type(emailCtx.selector, args.email, { delay: 20 });
+      const continued =
+        (await this.clickByText(
+          emailCtx.context as Page | Frame,
+          'button, [role="button"]',
+          ['continue', 'next', 'sign in'],
+        ).catch(() => false)) || false;
+      if (continued) {
+        await page
+          .waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 })
+          .catch(() => undefined);
+      }
+      // Wait again for password
+      await retryAsync(
+        async () => {
+          // Find password in any context (page or frames)
+          passwordCtx = await this.findFieldContext(page, [
+            'input[name="password"]',
+            'input#password',
+            'input[type="password"]',
+          ]);
+        },
+        { retries: 5 },
+      );
+    }
+    if (!passwordCtx) {
+      passwordCtx = await this.findFieldContext(page, [
+        'input[name="password"]',
+        'input#password',
+        'input[type="password"]',
+      ]);
+    }
 
     this.logger.debug(`Typing credentials for email=${args.email}`);
-    await emailCtx.context.type(emailCtx.selector, args.email, { delay: 20 });
+    // Ensure email is filled (if not already)
+    const emailValue = await (emailCtx.context as Page | Frame)
+      .$eval(
+        emailCtx.selector,
+        (el: any) => (el as HTMLInputElement).value || '',
+      )
+      .catch(() => '');
+    if (!emailValue) {
+      await emailCtx.context.type(emailCtx.selector, args.email, { delay: 20 });
+    }
     await passwordCtx.context.type(passwordCtx.selector, args.password, {
       delay: 20,
     });
 
     await retryAsync(
       async () => {
-        // Click submit from the same context as fields (frame or page)
-        await Promise.all([
-          (passwordCtx.context as Page | Frame).click('button[type="submit"]'),
-          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
-        ]);
+        // Click submit (try several common variants) from the same context as fields (frame or page)
+        const ctx = passwordCtx!.context as Page | Frame;
+        const clickedSubmit =
+          (await ctx
+            .$('button[type="submit"]')
+            .then(async (h) => (h ? (await h.click(), true) : false))) ||
+          (await this.clickByText(ctx, 'button, [role="button"]', [
+            'sign in',
+            'log in',
+            'continue',
+          ]).catch(() => false));
+        if (!clickedSubmit) {
+          throw new Error('Unable to locate login submit button');
+        }
+        await page.waitForNavigation({
+          waitUntil: 'networkidle2',
+          timeout: 20000,
+        });
       },
       { retries: 3 },
     );
@@ -97,7 +173,11 @@ export class AutomationService {
   private async acceptCookieBanner(page: Page): Promise<void> {
     // OneTrust default accept button id
     const oneTrust = '#onetrust-accept-btn-handler';
-    const candidates = [oneTrust, 'button[aria-label="Accept all"]', 'button[aria-label="Accept All"]'];
+    const candidates = [
+      oneTrust,
+      'button[aria-label="Accept all"]',
+      'button[aria-label="Accept All"]',
+    ];
     for (const sel of candidates) {
       const handle = await page.$(sel);
       if (handle) {
@@ -138,6 +218,27 @@ export class AutomationService {
     const last = selectors[selectors.length - 1];
     await page.waitForSelector(last, { timeout: 10000 });
     return { context: page, selector: last };
+  }
+
+  private async clickByText(
+    context: Page | Frame,
+    selector: string,
+    texts: string[],
+  ): Promise<boolean> {
+    const lowered = texts.map((t) => t.toLowerCase());
+    const handles = await context.$$(selector);
+    for (const handle of handles) {
+      const text = await context.evaluate(
+        (el) => (el.textContent || '').trim().toLowerCase(),
+        handle,
+      );
+      if (!text) continue;
+      if (lowered.some((t) => text.includes(t))) {
+        await handle.click();
+        return true;
+      }
+    }
+    return false;
   }
 
   private async applyCard(
