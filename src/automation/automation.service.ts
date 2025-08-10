@@ -31,6 +31,9 @@ export class AutomationService {
 
   private async launchBrowser(): Promise<Browser> {
     const executablePath = this.resolveChromeExecutable();
+    this.logger.log(
+      `Launching browser (executablePath=${executablePath ?? 'system default'})`,
+    );
     return puppeteer.launch({
       headless: true,
       executablePath,
@@ -39,6 +42,7 @@ export class AutomationService {
   }
 
   private async loginToParamount(page: Page, args: LoginArgs): Promise<void> {
+    this.logger.debug('Navigating to Paramount+ account page');
     await page.goto('https://www.paramountplus.com/account/', {
       waitUntil: 'domcontentloaded',
     });
@@ -56,6 +60,7 @@ export class AutomationService {
       { retries: 5 },
     );
 
+    this.logger.debug(`Typing credentials for email=${args.email}`);
     await page.type('input[name="email"]', args.email, { delay: 20 });
     await page.type('input[name="password"]', args.password, { delay: 20 });
 
@@ -68,12 +73,14 @@ export class AutomationService {
       },
       { retries: 3 },
     );
+    this.logger.debug('Login navigation completed');
   }
 
   private async applyCard(
     page: Page,
     card: CardInput,
   ): Promise<Record<string, unknown>> {
+    this.logger.debug('Navigating to Paramount+ billing page');
     await page.goto('https://www.paramountplus.com/account/billing/', {
       waitUntil: 'domcontentloaded',
     });
@@ -87,6 +94,9 @@ export class AutomationService {
     );
 
     await page.focus('input[name="cardNumber"]');
+    this.logger.debug(
+      `Entering card number (last4=${card.cardNumber.slice(-4)})`,
+    );
     await page.keyboard.type(card.cardNumber, { delay: 10 });
 
     await retryAsync(
@@ -116,6 +126,7 @@ export class AutomationService {
       { retries: 5 },
     );
     await page.focus('input[name="cvc"]');
+    this.logger.debug('Entering CVC (redacted)');
     await page.keyboard.type(card.cvc, { delay: 10 });
 
     await retryAsync(
@@ -154,6 +165,7 @@ export class AutomationService {
       },
       { retries: 3 },
     );
+    this.logger.debug('Submitted billing form and received response');
 
     return {
       last4: card.cardNumber.slice(-4),
@@ -174,6 +186,7 @@ export class AutomationService {
     const startTs = new Date();
     let step: 'LOGIN' | 'APPLY_CARD' | 'INIT' = 'INIT';
     try {
+      this.logger.log(`Starting automation for userId=${userId}`);
       browser = await this.launchBrowser();
       page = await browser.newPage();
       step = 'LOGIN';
@@ -187,6 +200,9 @@ export class AutomationService {
         message: 'Card updated successfully',
         metadata: { ...metadata, executedAt: startTs.toISOString() },
       });
+      this.logger.log(
+        `Automation SUCCESS for user ${user.email} (last4=${metadata.last4}, executedAt=${startTs.toISOString()})`,
+      );
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
