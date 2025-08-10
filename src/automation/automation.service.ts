@@ -5,7 +5,7 @@ import { UsersService } from '../users/users.service';
 import { TaskLog } from './entities/task-log.entity';
 import { CardInput } from './dto/card.input';
 import { retryAsync } from '../common/utils/retry.util';
-import puppeteer, { Browser, Page } from 'puppeteer-core';
+import puppeteer, { Browser, Page, Frame } from 'puppeteer-core';
 
 type LoginArgs = { email: string; password: string };
 
@@ -47,6 +47,9 @@ export class AutomationService {
       waitUntil: 'domcontentloaded',
     });
 
+    // Try to accept common cookie banners (OneTrust) if present
+    await this.acceptCookieBanner(page).catch(() => undefined);
+
     await retryAsync(
       async () => {
         await page.waitForSelector('input[name="email"]', { timeout: 5000 });
@@ -60,20 +63,81 @@ export class AutomationService {
       { retries: 5 },
     );
 
+    // Some pages lazy render or nest fields inside iframes; find robustly
+    const emailCtx = await this.findFieldContext(page, [
+      'input[name="email"]',
+      'input#email',
+      'input[type="email"]',
+    ]);
+    const passwordCtx = await this.findFieldContext(page, [
+      'input[name="password"]',
+      'input#password',
+      'input[type="password"]',
+    ]);
+
     this.logger.debug(`Typing credentials for email=${args.email}`);
-    await page.type('input[name="email"]', args.email, { delay: 20 });
-    await page.type('input[name="password"]', args.password, { delay: 20 });
+    await emailCtx.context.type(emailCtx.selector, args.email, { delay: 20 });
+    await passwordCtx.context.type(passwordCtx.selector, args.password, {
+      delay: 20,
+    });
 
     await retryAsync(
       async () => {
+        // Click submit from the same context as fields (frame or page)
         await Promise.all([
-          page.click('button[type="submit"]'),
-          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }),
+          (passwordCtx.context as Page | Frame).click('button[type="submit"]'),
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
         ]);
       },
       { retries: 3 },
     );
     this.logger.debug('Login navigation completed');
+  }
+
+  private async acceptCookieBanner(page: Page): Promise<void> {
+    // OneTrust default accept button id
+    const oneTrust = '#onetrust-accept-btn-handler';
+    const candidates = [oneTrust, 'button[aria-label="Accept all"]', 'button[aria-label="Accept All"]'];
+    for (const sel of candidates) {
+      const handle = await page.$(sel);
+      if (handle) {
+        await handle.click().catch(() => undefined);
+        this.logger.debug(`Cookie banner accepted via selector: ${sel}`);
+        return;
+      }
+    }
+  }
+
+  private async findFieldContext(
+    page: Page,
+    selectors: string[],
+  ): Promise<{ context: Page | Frame; selector: string }> {
+    // Try on the main page first
+    for (const selector of selectors) {
+      const found = await page
+        .waitForSelector(selector, { timeout: 2000 })
+        .then(() => true)
+        .catch(() => false);
+      if (found) {
+        return { context: page, selector };
+      }
+    }
+    // Then try all frames
+    for (const frame of page.frames()) {
+      for (const selector of selectors) {
+        const found = await frame
+          .waitForSelector(selector, { timeout: 2000 })
+          .then(() => true)
+          .catch(() => false);
+        if (found) {
+          return { context: frame, selector };
+        }
+      }
+    }
+    // As a last resort, extend timeout on main page for the last selector
+    const last = selectors[selectors.length - 1];
+    await page.waitForSelector(last, { timeout: 10000 });
+    return { context: page, selector: last };
   }
 
   private async applyCard(
