@@ -234,6 +234,18 @@ export class AutomationService {
     return false;
   }
 
+  private detectCardBrand(cardNumber: string): string {
+    const digits = cardNumber.replace(/[^0-9]/g, '');
+    if (/^3[47]/.test(digits)) return 'AMEX';
+    if (/^4/.test(digits)) return 'VISA';
+    if (/^(5[1-5]|2(2[2-9]|[3-6]|7[01]|720))/.test(digits)) return 'MASTERCARD';
+    if (/^(6011|65|64[4-9])/.test(digits)) return 'DISCOVER';
+    if (/^3(0[0-5]|[68])/.test(digits)) return 'DINERS';
+    if (/^(2131|1800|35)/.test(digits)) return 'JCB';
+    if (/^62/.test(digits)) return 'UNIONPAY';
+    return 'UNKNOWN';
+  }
+
   private async applyCard(
     page: Page,
     card: CardInput,
@@ -327,7 +339,7 @@ export class AutomationService {
 
     return {
       last4: card.cardNumber.slice(-4),
-      brand: 'UNKNOWN',
+      brand: this.detectCardBrand(card.cardNumber),
       expiryMonth: card.expiryMonth,
       expiryYear: card.expiryYear,
     };
