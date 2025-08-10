@@ -24,6 +24,7 @@
 ## Automation App (NestJS, GraphQL, TypeORM, Puppeteer)
 
 ### Overview
+
 This service manages users and automates payment card updates on `paramountplus.com` using Puppeteer. It exposes a secured GraphQL API with JWT.
 
 ### Project setup
@@ -40,6 +41,249 @@ npm run start:dev
 
 GraphQL endpoint: `http://localhost:3000/graphql`
 
+### API Reference
+
+All operations are available via GraphQL. Copy-paste the following examples into GraphQL Playground or your client of choice.
+
+Authentication: For secured operations, add the HTTP header:
+
+```
+{
+  "Authorization": "Bearer <ACCESS_TOKEN>"
+}
+```
+
+#### Auth
+
+- **register(input: RegisterInput): AuthPayload**
+  - **Arguments**: `input { email: string, name: string, password: string }`
+  - **Returns**: `AuthPayload { accessToken: string, user { id, email, name, createdAt, updatedAt } }`
+  - **Example**:
+    ```graphql
+    mutation Register($input: RegisterInput!) {
+      register(input: $input) {
+        accessToken
+        user {
+          id
+          email
+          name
+          createdAt
+          updatedAt
+        }
+      }
+    }
+    ```
+    Variables:
+    ```json
+    {
+      "input": {
+        "email": "alice@example.com",
+        "name": "Alice",
+        "password": "StrongPass123"
+      }
+    }
+    ```
+  - **Errors**:
+    - Email already in use → `message: "Email already in use"` (409/Conflict)
+
+- **login(input: LoginInput): AuthPayload**
+  - **Arguments**: `input { email: string, password: string }`
+  - **Returns**: `AuthPayload { accessToken, user { id, email, name, createdAt, updatedAt } }`
+  - **Example**:
+    ```graphql
+    mutation Login($input: LoginInput!) {
+      login(input: $input) {
+        accessToken
+        user {
+          id
+          email
+          name
+          createdAt
+          updatedAt
+        }
+      }
+    }
+    ```
+    Variables:
+    ```json
+    { "input": { "email": "alice@example.com", "password": "StrongPass123" } }
+    ```
+  - **Errors**:
+    - Invalid credentials → `message: "Invalid credentials"` (401/Unauthorized)
+
+#### Users (secured)
+
+- **users: [User!]!**
+  - **Returns**: Array of users
+  - **Example**:
+    ```graphql
+    query {
+      users {
+        id
+        email
+        name
+        createdAt
+        updatedAt
+      }
+    }
+    ```
+
+- **user(id: ID!): User!**
+  - **Arguments**: `id: string`
+  - **Returns**: Single user
+  - **Example**:
+    ```graphql
+    query User($id: ID!) {
+      user(id: $id) {
+        id
+        email
+        name
+        createdAt
+        updatedAt
+      }
+    }
+    ```
+    Variables:
+    ```json
+    { "id": "<USER_ID>" }
+    ```
+  - **Errors**:
+    - Not found → `message: "User not found"` (404/NotFound)
+
+- **createUser(input: CreateUserInput!): User!**
+  - **Arguments**: `input { email, name, password }`
+  - **Returns**: Created user
+  - **Example**:
+    ```graphql
+    mutation CreateUser($input: CreateUserInput!) {
+      createUser(input: $input) {
+        id
+        email
+        name
+        createdAt
+        updatedAt
+      }
+    }
+    ```
+    Variables:
+    ```json
+    {
+      "input": {
+        "email": "bob@example.com",
+        "name": "Bob",
+        "password": "StrongPass123"
+      }
+    }
+    ```
+  - **Errors**:
+    - Email already in use → `message: "Email already in use"` (409/Conflict)
+
+- **updateUser(input: UpdateUserInput!): User!**
+  - **Arguments**: `input { id: ID!, email?: string, name?: string, password?: string }`
+  - **Returns**: Updated user
+  - **Example**:
+    ```graphql
+    mutation UpdateUser($input: UpdateUserInput!) {
+      updateUser(input: $input) {
+        id
+        email
+        name
+        updatedAt
+      }
+    }
+    ```
+    Variables:
+    ```json
+    { "input": { "id": "<USER_ID>", "name": "New Name" } }
+    ```
+  - **Errors**:
+    - Email already in use → `message: "Email already in use"` (409/Conflict)
+    - Not found → `message: "User not found"` (404/NotFound)
+
+- **removeUser(id: ID!): Boolean!**
+  - **Arguments**: `id: string`
+  - **Returns**: `true` if removed
+  - **Example**:
+    ```graphql
+    mutation Remove($id: ID!) {
+      removeUser(id: $id)
+    }
+    ```
+    Variables:
+    ```json
+    { "id": "<USER_ID>" }
+    ```
+
+- Optional service methods (not exposed by default resolvers but available in `UsersService`):
+  - `resetPassword(id: string, newPassword: string): UserEntity`
+  - `changePassword(id: string, currentPassword: string, newPassword: string): UserEntity` (throws 401 if current password is invalid)
+
+#### Automation (secured)
+
+- **updateCardPayment(userId: ID!, email: String!, password: String!, card: CardInput!): Boolean!**
+  - **Arguments**:
+    - `userId: string` (internal user to associate logs with)
+    - `email: string`, `password: string` (Paramount+ credentials)
+    - `card: { cardNumber: string, expiryMonth: Int, expiryYear: Int, cvc: string, nameOnCard: string, postalCode?: string }`
+  - **Returns**: `true` on success, `false` on failure (errors are logged to `task_logs`)
+  - **Example**:
+    ```graphql
+    mutation UpdateCard(
+      $userId: ID!
+      $email: String!
+      $password: String!
+      $card: CardInput!
+    ) {
+      updateCardPayment(
+        userId: $userId
+        email: $email
+        password: $password
+        card: $card
+      )
+    }
+    ```
+    Variables:
+    ```json
+    {
+      "userId": "<USER_ID>",
+      "email": "paramountuser@example.com",
+      "password": "ParamountPass123",
+      "card": {
+        "cardNumber": "4111111111111111",
+        "expiryMonth": 12,
+        "expiryYear": 2030,
+        "cvc": "123",
+        "nameOnCard": "Alice Example",
+        "postalCode": "90210"
+      }
+    }
+    ```
+  - **Notes / Errors**:
+    - On failure, the mutation returns `false` and a `task_logs` record is created with `status = FAILED`, `message`, and metadata (timestamp, step, last URL, etc.).
+    - If the server cannot launch Chrome/Puppeteer or encounters fatal errors before handling, a GraphQL error may be returned.
+
+### Typical error responses
+
+GraphQL errors follow the standard shape. Common cases:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Invalid credentials",
+      "extensions": { "code": "UNAUTHORIZED" }
+    }
+  ],
+  "data": null
+}
+```
+
+Other messages you may see:
+
+- `"Email already in use"` (Conflict)
+- `"User not found"` (NotFound)
+- Validation errors from input validation (e.g., password min length, email format)
+
 ### Config (.env)
 
 ```
@@ -54,6 +298,7 @@ CHROME_EXECUTABLE_PATH=C:/Program Files/Google/Chrome/Application/chrome.exe
 ```
 
 ### Schema: main operations
+
 - Auth
   - `register(input: RegisterInput): AuthPayload`
   - `login(input: LoginInput): AuthPayload`
@@ -67,6 +312,7 @@ CHROME_EXECUTABLE_PATH=C:/Program Files/Google/Chrome/Application/chrome.exe
   - `updateCardPayment(userId: ID!, email: String!, password: String!, card: CardInput!): Boolean!`
 
 ### Puppeteer
+
 - Uses `puppeteer-core`; configure `CHROME_EXECUTABLE_PATH` if Chrome isn’t at default Windows path.
 - Exponential backoff retry for flaky UI waits.
 - Logs task outcomes to `task_logs` with metadata (timestamps, last4, expiry).
