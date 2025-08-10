@@ -39,27 +39,49 @@ export class AutomationService {
   }
 
   private async loginToParamount(page: Page, args: LoginArgs): Promise<void> {
-    await page.goto('https://www.paramountplus.com/account/');
+    await page.goto('https://www.paramountplus.com/account/', {
+      waitUntil: 'domcontentloaded',
+    });
+
     await retryAsync(
       async () => {
         await page.waitForSelector('input[name="email"]', { timeout: 5000 });
       },
       { retries: 5 },
     );
+    await retryAsync(
+      async () => {
+        await page.waitForSelector('input[name="password"]', { timeout: 5000 });
+      },
+      { retries: 5 },
+    );
+
     await page.type('input[name="email"]', args.email, { delay: 20 });
     await page.type('input[name="password"]', args.password, { delay: 20 });
 
-    await Promise.all([
-      page.click('button[type="submit"]'),
-      page.waitForNavigation({ waitUntil: 'networkidle2' }),
-    ]);
-  }
-
-  private async applyCard(page: Page, card: CardInput): Promise<Record<string, unknown>> {
-    await page.goto('https://www.paramountplus.com/account/billing/');
     await retryAsync(
       async () => {
-        await page.waitForSelector('input[name="cardNumber"]', { timeout: 5000 });
+        await Promise.all([
+          page.click('button[type="submit"]'),
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }),
+        ]);
+      },
+      { retries: 3 },
+    );
+  }
+
+  private async applyCard(
+    page: Page,
+    card: CardInput,
+  ): Promise<Record<string, unknown>> {
+    await page.goto('https://www.paramountplus.com/account/billing/', {
+      waitUntil: 'domcontentloaded',
+    });
+    await retryAsync(
+      async () => {
+        await page.waitForSelector('input[name="cardNumber"]', {
+          timeout: 5000,
+        });
       },
       { retries: 5 },
     );
@@ -67,29 +89,71 @@ export class AutomationService {
     await page.focus('input[name="cardNumber"]');
     await page.keyboard.type(card.cardNumber, { delay: 10 });
 
+    await retryAsync(
+      async () => {
+        await page.waitForSelector('input[name="expMonth"]', { timeout: 5000 });
+      },
+      { retries: 5 },
+    );
     await page.focus('input[name="expMonth"]');
-    await page.keyboard.type(String(card.expiryMonth).padStart(2, '0'), { delay: 10 });
+    await page.keyboard.type(String(card.expiryMonth).padStart(2, '0'), {
+      delay: 10,
+    });
 
+    await retryAsync(
+      async () => {
+        await page.waitForSelector('input[name="expYear"]', { timeout: 5000 });
+      },
+      { retries: 5 },
+    );
     await page.focus('input[name="expYear"]');
     await page.keyboard.type(String(card.expiryYear), { delay: 10 });
 
+    await retryAsync(
+      async () => {
+        await page.waitForSelector('input[name="cvc"]', { timeout: 5000 });
+      },
+      { retries: 5 },
+    );
     await page.focus('input[name="cvc"]');
     await page.keyboard.type(card.cvc, { delay: 10 });
 
+    await retryAsync(
+      async () => {
+        await page.waitForSelector('input[name="nameOnCard"]', {
+          timeout: 5000,
+        });
+      },
+      { retries: 5 },
+    );
     await page.focus('input[name="nameOnCard"]');
     await page.keyboard.type(card.nameOnCard, { delay: 10 });
 
     if (card.postalCode) {
+      await retryAsync(
+        async () => {
+          await page.waitForSelector('input[name="postalCode"]', {
+            timeout: 5000,
+          });
+        },
+        { retries: 5 },
+      );
       await page.focus('input[name="postalCode"]');
       await page.keyboard.type(card.postalCode, { delay: 10 });
     }
 
-    await Promise.all([
-      page.click('button[type="submit"]'),
-      page.waitForResponse((res) => res.url().includes('/billing') && res.status() < 500, {
-        timeout: 15000,
-      }),
-    ]);
+    await retryAsync(
+      async () => {
+        await Promise.all([
+          page.click('button[type="submit"]'),
+          page.waitForResponse(
+            (res) => res.url().includes('/billing') && res.status() < 500,
+            { timeout: 20000 },
+          ),
+        ]);
+      },
+      { retries: 3 },
+    );
 
     return {
       last4: card.cardNumber.slice(-4),
@@ -99,15 +163,22 @@ export class AutomationService {
     };
   }
 
-  async updateCardForUser(userId: string, login: LoginArgs, card: CardInput): Promise<boolean> {
+  async updateCardForUser(
+    userId: string,
+    login: LoginArgs,
+    card: CardInput,
+  ): Promise<boolean> {
     const user = await this.usersService.findById(userId);
     let browser: Browser | null = null;
     let page: Page | null = null;
     const startTs = new Date();
+    let step: 'LOGIN' | 'APPLY_CARD' | 'INIT' = 'INIT';
     try {
       browser = await this.launchBrowser();
       page = await browser.newPage();
+      step = 'LOGIN';
       await this.loginToParamount(page, login);
+      step = 'APPLY_CARD';
       const metadata = await this.applyCard(page, card);
       await this.taskLogRepository.save({
         user,
@@ -125,7 +196,11 @@ export class AutomationService {
         taskType: 'UPDATE_CARD',
         status: 'FAILED',
         message,
-        metadata: { executedAt: startTs.toISOString() },
+        metadata: {
+          executedAt: startTs.toISOString(),
+          stepFailed: step,
+          url: page ? page.url() : undefined,
+        },
       });
       return false;
     } finally {
@@ -138,4 +213,3 @@ export class AutomationService {
     }
   }
 }
-
