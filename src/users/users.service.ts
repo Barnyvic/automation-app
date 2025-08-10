@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  UnauthorizedException,
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -91,5 +92,33 @@ export class UsersService {
     const ok = result.affected === 1;
     this.logger.log(`Removed user id=${id} ok=${ok}`);
     return ok;
+  }
+
+  async resetPassword(id: string, newPassword: string): Promise<UserEntity> {
+    this.logger.log(`Resetting password for user id=${id}`);
+    const user = await this.findById(id);
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    user.passwordHash = passwordHash;
+    const saved = await this.userRepository.save(user);
+    this.logger.log(`Password reset for user id=${saved.id}`);
+    return saved;
+  }
+
+  async changePassword(
+    id: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<UserEntity> {
+    this.logger.log(`Changing password for user id=${id}`);
+    const user = await this.findById(id);
+    const matches = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!matches) {
+      this.logger.warn(`Invalid current password for user id=${id}`);
+      throw new UnauthorizedException('Invalid current password');
+    }
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    const saved = await this.userRepository.save(user);
+    this.logger.log(`Password changed for user id=${saved.id}`);
+    return saved;
   }
 }

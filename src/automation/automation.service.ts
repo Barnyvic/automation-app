@@ -8,6 +8,12 @@ import { retryAsync } from '../common/utils/retry.util';
 import puppeteer, { Browser, Page, Frame } from 'puppeteer-core';
 
 type LoginArgs = { email: string; password: string };
+type CardUpdateMetadata = {
+  last4: string;
+  brand: string;
+  expiryMonth: number;
+  expiryYear: number;
+};
 
 @Injectable()
 export class AutomationService {
@@ -42,14 +48,12 @@ export class AutomationService {
   }
 
   private async loginToParamount(page: Page, args: LoginArgs): Promise<void> {
-    // Start from homepage then navigate to sign-in for better reliability
     this.logger.debug('Opening Paramount+ homepage');
     await page.goto('https://www.paramountplus.com/', {
       waitUntil: 'domcontentloaded',
     });
     await this.acceptCookieBanner(page).catch(() => undefined);
 
-    // Try to click SIGN IN entrypoint; if not found, fall back to account page
     const clickedSignIn = await this.clickByText(page, 'a,button', [
       'sign in',
       'log in',
@@ -67,7 +71,6 @@ export class AutomationService {
         .catch(() => undefined);
     }
 
-    // Try to accept common cookie banners (OneTrust) if present
     await this.acceptCookieBanner(page).catch(() => undefined);
 
     await retryAsync(
@@ -76,18 +79,16 @@ export class AutomationService {
       },
       { retries: 5 },
     );
-    // Password may appear after continuing from email; try wait, otherwise try Continue/Next then wait again
     let passwordVisible = false;
     try {
       await page.waitForSelector('input[name="password"]', { timeout: 5000 });
       passwordVisible = true;
-    } catch (_) {
+    } catch {
       this.logger.debug(
         'Password not visible yet; attempting to continue after email',
       );
     }
 
-    // Some pages lazy render or nest fields inside iframes; find robustly
     const emailCtx = await this.findFieldContext(page, [
       'input[name="email"]',
       'input#email',
@@ -95,23 +96,21 @@ export class AutomationService {
     ]);
     let passwordCtx: { context: Page | Frame; selector: string } | null = null;
     if (!passwordVisible) {
-      // Try a two-step flow: click Continue/Next after typing email to reveal password
       await emailCtx.context.type(emailCtx.selector, args.email, { delay: 20 });
+      const submitButtonLabels = ['continue', 'next', 'sign in'];
       const continued =
         (await this.clickByText(
-          emailCtx.context as Page | Frame,
+          emailCtx.context,
           'button, [role="button"]',
-          ['continue', 'next', 'sign in'],
+          submitButtonLabels,
         ).catch(() => false)) || false;
       if (continued) {
         await page
           .waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 })
           .catch(() => undefined);
       }
-      // Wait again for password
       await retryAsync(
         async () => {
-          // Find password in any context (page or frames)
           passwordCtx = await this.findFieldContext(page, [
             'input[name="password"]',
             'input#password',
@@ -130,8 +129,7 @@ export class AutomationService {
     }
 
     this.logger.debug(`Typing credentials for email=${args.email}`);
-    // Ensure email is filled (if not already)
-    const emailValue = await (emailCtx.context as Page | Frame)
+    const emailValue = await emailCtx.context
       .$eval(
         emailCtx.selector,
         (el: any) => (el as HTMLInputElement).value || '',
@@ -146,8 +144,7 @@ export class AutomationService {
 
     await retryAsync(
       async () => {
-        // Click submit (try several common variants) from the same context as fields (frame or page)
-        const ctx = passwordCtx!.context as Page | Frame;
+        const ctx = passwordCtx!.context;
         const clickedSubmit =
           (await ctx
             .$('button[type="submit"]')
@@ -171,7 +168,6 @@ export class AutomationService {
   }
 
   private async acceptCookieBanner(page: Page): Promise<void> {
-    // OneTrust default accept button id
     const oneTrust = '#onetrust-accept-btn-handler';
     const candidates = [
       oneTrust,
@@ -192,7 +188,6 @@ export class AutomationService {
     page: Page,
     selectors: string[],
   ): Promise<{ context: Page | Frame; selector: string }> {
-    // Try on the main page first
     for (const selector of selectors) {
       const found = await page
         .waitForSelector(selector, { timeout: 2000 })
@@ -202,7 +197,6 @@ export class AutomationService {
         return { context: page, selector };
       }
     }
-    // Then try all frames
     for (const frame of page.frames()) {
       for (const selector of selectors) {
         const found = await frame
@@ -214,7 +208,6 @@ export class AutomationService {
         }
       }
     }
-    // As a last resort, extend timeout on main page for the last selector
     const last = selectors[selectors.length - 1];
     await page.waitForSelector(last, { timeout: 10000 });
     return { context: page, selector: last };
@@ -244,7 +237,7 @@ export class AutomationService {
   private async applyCard(
     page: Page,
     card: CardInput,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<CardUpdateMetadata> {
     this.logger.debug('Navigating to Paramount+ billing page');
     await page.goto('https://www.paramountplus.com/account/billing/', {
       waitUntil: 'domcontentloaded',

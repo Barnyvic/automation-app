@@ -1,4 +1,12 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn, Index, OneToMany } from 'typeorm';
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
+  Index,
+  OneToMany,
+} from 'typeorm';
 import { TaskLog } from '../../automation/entities/task-log.entity';
 
 @Entity('users')
@@ -25,4 +33,3 @@ export class UserEntity {
   @OneToMany(() => TaskLog, (log) => log.user)
   taskLogs!: TaskLog[];
 }
-

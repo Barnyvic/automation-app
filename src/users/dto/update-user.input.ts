@@ -21,4 +21,3 @@ export class UpdateUserInput {
   @MinLength(8)
   password?: string;
 }
-
