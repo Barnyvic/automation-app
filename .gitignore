@@ -1,0 +1,38 @@
+# Node / NestJS
+node_modules/
+dist/
+build/
+tmp/
+temp/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Caches / Coverage
+.cache/
+.eslintcache
+.nyc_output/
+coverage/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo
+
+# Generated GraphQL schema
+src/schema.gql
+
+
