@@ -5,7 +5,7 @@ import { UsersService } from '../users/users.service';
 import { TaskLog } from './entities/task-log.entity';
 import { CardInput } from './dto/card.input';
 import { retryAsync } from '../common/utils/retry.util';
-import puppeteer, { Browser, Page, Frame } from 'puppeteer-core';
+import type { Browser, Page, Frame } from 'puppeteer-core';
 
 type LoginArgs = { email: string; password: string };
 type CardUpdateMetadata = {
@@ -13,6 +13,11 @@ type CardUpdateMetadata = {
   brand: string;
   expiryMonth: number;
   expiryYear: number;
+};
+
+type PuppeteerLauncher = {
+  launch: (options?: any) => Promise<Browser>;
+  use?: (plugin: any) => void;
 };
 
 @Injectable()
@@ -40,11 +45,121 @@ export class AutomationService {
     this.logger.log(
       `Launching browser (executablePath=${executablePath ?? 'system default'})`,
     );
-    return puppeteer.launch({
+    let launcher: PuppeteerLauncher;
+    try {
+      const peModule = (await import('puppeteer-extra')) as unknown;
+      launcher = peModule as PuppeteerLauncher;
+      try {
+        const stealthModule = (await import(
+          'puppeteer-extra-plugin-stealth'
+        )) as unknown;
+        const maybeFactory =
+          (stealthModule as Record<string, unknown>).default ?? stealthModule;
+        if (
+          typeof maybeFactory === 'function' &&
+          typeof (launcher as Record<string, unknown>).use === 'function'
+        ) {
+          (launcher as { use: (p: unknown) => void }).use(
+            (maybeFactory as () => unknown)(),
+          );
+          this.logger.log('puppeteer-extra with stealth enabled');
+        } else {
+          this.logger.warn(
+            'Stealth plugin shape unexpected; proceeding without it',
+          );
+        }
+      } catch {
+        this.logger.warn('Stealth plugin not available; proceeding without it');
+      }
+    } catch {
+      const coreModule = (await import('puppeteer-core')) as unknown;
+      launcher = coreModule as PuppeteerLauncher;
+      this.logger.warn(
+        'puppeteer-extra not available; falling back to puppeteer-core',
+      );
+    }
+
+    return launcher.launch({
       headless: true,
       executablePath,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-blink-features=AutomationControlled',
+      ],
     });
+  }
+
+  private getRandomInt(min: number, max: number): number {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private getRandomUserAgent(): string {
+    const candidates = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    ];
+    return candidates[this.getRandomInt(0, candidates.length - 1)];
+  }
+
+  private async preparePage(page: Page): Promise<void> {
+    const width = this.getRandomInt(1280, 1920);
+    const height = this.getRandomInt(720, 1080);
+    await page.setViewport({ width, height, deviceScaleFactor: 1 });
+    await page.setUserAgent(this.getRandomUserAgent());
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      DNT: '1',
+      'Upgrade-Insecure-Requests': '1',
+      Accept:
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    });
+  }
+
+  private async humanType(
+    context: Page | Frame,
+    selector: string,
+    text: string,
+  ): Promise<void> {
+    // Small pause before typing
+    await this.sleep(this.getRandomInt(120, 300));
+    // Clear existing value if any
+    try {
+      await context.focus(selector);
+    } catch {
+      /* ignore */
+    }
+    for (const char of text) {
+      const delay = this.getRandomInt(40, 180);
+      await context.type(selector, char, { delay });
+      if (Math.random() < 0.05) {
+        // occasional pause
+        await this.sleep(this.getRandomInt(150, 350));
+      }
+    }
+  }
+
+  private async humanClick(
+    context: Page | Frame,
+    selector: string,
+  ): Promise<boolean> {
+    const handle = await context.$(selector);
+    if (!handle) return false;
+    await this.sleep(this.getRandomInt(80, 220));
+    try {
+      await handle.click({ delay: this.getRandomInt(40, 160) });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async loginToParamount(page: Page, args: LoginArgs): Promise<void> {
@@ -96,7 +211,7 @@ export class AutomationService {
     ]);
     let passwordCtx: { context: Page | Frame; selector: string } | null = null;
     if (!passwordVisible) {
-      await emailCtx.context.type(emailCtx.selector, args.email, { delay: 20 });
+      await this.humanType(emailCtx.context, emailCtx.selector, args.email);
       const submitButtonLabels = ['continue', 'next', 'sign in'];
       const continued =
         (await this.clickByText(
@@ -136,19 +251,19 @@ export class AutomationService {
       )
       .catch(() => '');
     if (!emailValue) {
-      await emailCtx.context.type(emailCtx.selector, args.email, { delay: 20 });
+      await this.humanType(emailCtx.context, emailCtx.selector, args.email);
     }
-    await passwordCtx.context.type(passwordCtx.selector, args.password, {
-      delay: 20,
-    });
+    await this.humanType(
+      passwordCtx.context,
+      passwordCtx.selector,
+      args.password,
+    );
 
     await retryAsync(
       async () => {
         const ctx = passwordCtx!.context;
         const clickedSubmit =
-          (await ctx
-            .$('button[type="submit"]')
-            .then(async (h) => (h ? (await h.click(), true) : false))) ||
+          (await this.humanClick(ctx, 'button[type="submit"]')) ||
           (await this.clickByText(ctx, 'button, [role="button"]', [
             'sign in',
             'log in',
@@ -359,6 +474,7 @@ export class AutomationService {
       this.logger.log(`Starting automation for userId=${userId}`);
       browser = await this.launchBrowser();
       page = await browser.newPage();
+      await this.preparePage(page);
       step = 'LOGIN';
       await this.loginToParamount(page, login);
       step = 'APPLY_CARD';
