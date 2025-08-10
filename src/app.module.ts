@@ -18,9 +18,12 @@ import type { Request, Response } from 'express';
       driver: ApolloDriver,
       autoSchemaFile: join(process.cwd(), 'src/schema.gql'),
       sortSchema: true,
-      playground: false,
+      playground: process.env.NODE_ENV !== 'production',
       introspection: true,
-      context: ({ req, res }: { req: Request; res: Response }) => ({ req, res }),
+      context: ({ req, res }: { req: Request; res: Response }) => ({
+        req,
+        res,
+      }),
     }),
     TypeOrmModule.forRoot({
       type: 'postgres',
