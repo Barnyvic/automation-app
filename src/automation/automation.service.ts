@@ -129,19 +129,16 @@ export class AutomationService {
     selector: string,
     text: string,
   ): Promise<void> {
-    // Small pause before typing
     await this.sleep(this.getRandomInt(120, 300));
-    // Clear existing value if any
     try {
       await context.focus(selector);
     } catch {
-      /* ignore */
+      this.logger.debug(`Failed to focus ${selector}`);
     }
     for (const char of text) {
       const delay = this.getRandomInt(40, 180);
       await context.type(selector, char, { delay });
       if (Math.random() < 0.05) {
-        // occasional pause
         await this.sleep(this.getRandomInt(150, 350));
       }
     }
